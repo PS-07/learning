@@ -1,0 +1,162 @@
+go project setup:
+mkdir goproj
+cd goproj
+go mod init goproj : creates go.mod file
+go mod tidy : adds all project dependencies to go.mod file and transitive dependencies to go.sum file (creates go.sum file, if not already)
+go mod vendor: downloads all dependencies in vendor/ dir
+gofmt -w file.go : formats code(beautify)
+testing: 
+  import "testing"
+  file - filename_test.go
+  package -  packagename_test
+  func - func TestFuncname(t *testing.T) { ... }
+  run(all tests) - go test -v .
+  run(specific test) - go test -v -run Testname
+
+structure:  
+- cmd
+  -- main.go
+- pkg
+  -- app
+  -- controllers
+  -- database
+  .
+  .
+  -- utils
+
+build : go build -o <app-name> cmd/main.go
+run   : ./<app-name>
+
+How to write Go code - https://golang.org/doc/code.html
+Go commands - https://golang.org/cmd/go/
+Go project layout - https://github.com/golang-standards/project-layout
+
+concurrency
+- is not parallelism
+- def: breaking up a program into independently executable tasks that could run at same time
+- when a program starts, its only goroutine is the one that calls the main function, called the main goroutine
+- new goroutines can be created using go statement
+- f():      call f(), wait for it to return
+- go f():   create a new goroutine that calls f(), doesn't wait for result
+  ex. f1() and f2() will run simultaneously
+      func main() {
+          go f1()       // creates a goroutine
+          f2()          // executed by main goroutine
+      }
+- when main function returns, all goroutines are abruptly terminated and the program exits
+  ex. f1() and f2() won't even start execution as main goroutine would terminate instantly as there is nothing to do
+      func main() {
+          go f1()       // creates a goroutine
+          go f2()       // creates a goroutine
+      }
+  ex. main goroutine sleeps for 2 sec and then the program terminates, hence f1() and f2() will run for that duration too
+      func main() {
+          go f1()       // creates a goroutine
+          go f2()       // creates a goroutine
+          time.Sleep(time.Second * 2)
+      }
+- wait group (it's just a counter) is used to block the main goroutine until all goroutines have finished
+  ex. only when f1() goroutine finishes, counter will be decremented to unblock the main goroutine
+      func main() {
+          var wg sync.WaitGroup
+          wg.Add(1) // increments counter by 1
+          go func() {
+              f1()
+              wg.Done() // decrements counter by 1
+          }()
+          wg.Wait() // blocks the main goroutine until count in 0
+      }
+- channel: for communication between goroutines
+  sending and receiving are blocking operations i.e. while receiving, it will wait for a value and while sending, it will wait until receiver is ready to receive
+  sending to channel:       c <- x
+  receiving from channel:   x := <- c
+  ensure that jobs channel only receive and data is only sent on results channel: func worker(jobs <-chan int, results chan<- int)
+  hence blocking nature of channels is used for synchronizing goroutines
+  close the channel so that receiver is unblocked
+  ex. channel
+      func main() {
+          c := make(chan string) // create a channel, datatype is mandatory
+          go f1(x,c)
+          for msg := range c {  // will receive on channel until it is closed
+              fmt.Println(msg)
+          }
+      }
+      func f1(x int, c chan string) {
+          c <- x // send data on channel
+          close(c) // close the channel so main goroutine is not blocked
+      }
+  ex. use select to receive from multiple channel without blocking others
+      select {
+      case msg1 := <- c1:
+          fmt.Println(msg1)
+      case msg2 := <- c2:
+          fmt.Println(msg2)
+      }
+- buffered channel: has a capacity, won't block sending until channel is full
+  ex. buffered channel
+      func main() {
+          c := make(chan int, 2) // channel with capacity = 2, won't block sending until channel is full
+          c <- 4
+          c <- 9
+          msg1 := <- c 
+          fmt.Println(msg1)
+          msg2 := <- c 
+          fmt.Println(msg2)
+      }
+- worker pool: multiple workers can do same task
+  ex. worker pool
+      func main() {
+          N := 100
+          jobs := make(chan int, N)
+          results := make(chan int, N)
+          go worker(jobs, results)
+          go worker(jobs, results)
+          go worker(jobs, results)
+          for i := 0; i < N; i++ {
+              jobs <- i
+          }
+          close(jobs)
+          for i := 0; i < N; i++ {
+              fmt.Println(<-results)
+          }
+      } 
+      func worker(jobs <-chan int, results chan<- int) {    // ensure that jobs channel only receive and data is only sent on results channel
+          for n := range jobs {
+              results <- fib(n)
+          }
+      }
+      func fib(n int) int {
+          if n<=1 {
+              return n
+          }
+          return fib(n-1) + fib(n-2)
+      }
+- pipelines: channels can be used to connect goroutines together so that the output of one is the input to another
+  ex. counter -> squarer -> printer
+      func main() {
+          naturals := make(chan int)
+          squares := make(chan int)
+          go counter(naturals)
+          go squarer(squares, naturals)
+          printer(squares)
+      }
+
+      func counter(out chan<- int) {
+          for x := 0; x < 10; x++ {
+              out <- x
+          }
+          close(out)
+      }
+
+      func squarer(out chan<- int, in <-chan int) {
+          for x := range in {
+              out <- x * x
+          }
+          close(out)
+      }
+
+      func printer(in <-chan int) {
+          for x := range in {
+              fmt.Println(x)
+          }
+      }
