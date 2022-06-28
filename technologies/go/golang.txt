@@ -31,6 +31,9 @@ How to write Go code - https://golang.org/doc/code.html
 Go commands - https://golang.org/cmd/go/
 Go project layout - https://github.com/golang-standards/project-layout
 
+export GOPATH=$(go env GOPATH)
+export PATH=$PATH:$GOPATH/bin
+
 concurrency
 - is not parallelism
 - def: breaking up a program into independently executable tasks that could run at same time
