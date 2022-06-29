@@ -1,0 +1,46 @@
+Load Balancer: a software that forwards client requests to different servers based on several criteria
+
+
+Layer 4 LB
+examples: haproxy, NLB
+- balances load based on IP addr and port
+- changes destination IP of incoming data packet from its IP to routed server's IP using NAT (network address translation)
+  client (44.1.1.1) -> LB (44.2.2.2) -> server A (44.3.3.3)
+                                     -> server B (44.4.4.4)
+  packet: [44.1.1.1 [data] 44.2.2.2] -> [44.1.1.1 [data] 44.3.3.3] 
+- forwards the same tcp connection  
+- sticky per segment i.e. sends all segments of the packet to same server (max segment size = 1500 bytes)
+
+pros
+- simpler load balancing
+- efficient (since no data lookup)
+- more secure (does not have certificate to decrypt data)
+- single tcp connection
+
+cons
+- no smart load balancing (since no data lookup)
+- not available for microservices
+- no caching (since no data lookup)
+
+
+Layer 7 LB
+examples: nginx
+- balances load smartly by using request data
+- creates a new tcp connection packet from LB to routed server
+  client (44.1.1.1) -> LB (44.2.2.2) -> server A (44.3.3.3) : pictures
+                                     -> server B (44.4.4.4) : comments
+  packet: [44.1.1.1 [GET /comments] 44.2.2.2] -> [44.2.2.2 [GET /comments] 44.4.4.4]
+  packet: [44.1.1.1 [GET /pictures] 44.2.2.2] -> [44.2.2.2 [GET /pictures] 44.3.3.3]
+- tls handshake between client and LB, also tls handshake between LB and servers should be implemented
+
+pros
+- smart load balancing
+- supports caching
+- great for microservices 
+
+cons
+- expensive (since data lookup)
+- encrypt/decrypt data (terminates client-LB tls)
+- has 2 tcp connection
+- less secure if certificate is compromised
+- must share tls certificate

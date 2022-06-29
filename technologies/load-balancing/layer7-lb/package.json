@@ -1,0 +1,17 @@
+{
+  "name": "layer7-lb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "app1server1": "PORT=4444 node index.js",
+    "app1server2": "PORT=5555 node index.js",
+    "app2server1": "PORT=6666 node index.js",
+    "app2server2": "PORT=7777 node index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.1"
+  }
+}

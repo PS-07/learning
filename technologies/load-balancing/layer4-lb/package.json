@@ -1,0 +1,15 @@
+{
+  "name": "layer4-lb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "server-a": "PORT=4444 node index.js",
+    "server-b": "PORT=5555 node index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.1"
+  }
+}
