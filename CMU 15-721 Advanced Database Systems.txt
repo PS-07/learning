@@ -1,0 +1,304 @@
+CMU 15-721 Advanced Databse Systems
+
+application store their data in OLTP databases
+ETL: for analytical purpose, they need to move it to OLAP database systems while doing some transformations, ex: informatica, fivetran 
+ELT: copy the data to OLAP and then do the transformations, ex: dbt, airbyte
+OLTP data can also be dumped in datalakes (file storage like s3, azure) in csv, json, avro, parquet (compressed columnar format)
+and then can be moved from datalake to datawarehouse
+
+map-reduce: 
+  paper by Google in 2004, distributed programming framework where we can write specialized map and reduce java funtions (UDF) for data processing
+  they were creating checkpoints at each and every stage, which made it slower, inefficient architechture
+hadoop: opensource clone of map-reduce created by Yahoo
+hive: added sql on top of map-reduce, similar mapr-db
+presto/trino: efficient for running analytical queries on share-disk storage
+nosql db: 
+  introduced in 2000s, focus on high availability and high scalability
+  schemaless, non-relational data model (document, key-value, column family), no joins
+  no acid transactions, custom apis instead of sql, but now each one of these support some version of sql
+  ex. mongodb, cassandra, dynamodb, redis, hbase, couchdb
+newsql db: nosql db with acid transactions, relational/sql, distributed, almost all of them failed ex. hstore, geniedb, google spanner
+distributed sql db: second wave of newsql db, doing a bit better ex. tidb, cockroachdb
+cloud systems: 
+  initial DBaaS offerings were containerized version of existing dbms
+  then came new dbms designed from scratch to run on cloud env ex. snowflake, bigquery, redshift, aurora, dynamodb
+shared disk engines (datalake):
+  instead of writing custom storage manager, dbms leverages distributed storage, most commonly used now
+  adv: scale execution layer independent of storage ex. snowflake, druid, redshift, apache spark, presto, pinot, apache drill
+graph db: storing and query graph data, graph-centric query api ex. neo4j, memgraph, dgraph, terminusdb
+timeseries db: 
+  specialized system designed to store timeseries/event data
+  the design makes assumptions about the distribution of data and workload query patterns ex. influxdb, clickhouse, prometheus
+blockchain db: 
+  decentralized distributed log with incremental checksums (merkle trees)
+  uses byzantine fault tolerance (bft) protocol to determine next entry to append to log ex. bigchaindb, fluree, condensation
+embedded db: ex. sqlite, rocksdb, duckdb
+multi-model db: supoorts graph, relations and documents all in one ex. apache ignite, arango db
+array/matrix/vector db
+
+distributed OLAP
+distributed query execution:
+  executing a olap query in distributed dbms is roughly same as on a single node dbms
+  query plan: dag on physical operators
+  for each operator (tablescan, join, sort, agg), dbms will consider where input is comping from and where to send the output
+  worker nodes will read persisted data, optionally send it to shuffle nodes and
+  worker nodes will run parallelly to execute fragments of query while sharing intermediate data
+  persisted data:
+    source of record for database ex. tables (actaul data)
+    data files are immutable, but can support updates by rewriting them
+  intermediate data:
+  	short-lived artifacts produced by query operators during execution and consumed by other query operators (nodes)
+  	it has been observed that generally intermediate data is quite large in comparison to persisted data for a query
+  finally all nodes send data to a worker node which will union them and send back the result to the client 
+a distributed DBMS system knows the specific location of data files, used to determine how nodes coordinate to retrieve/store objects
+two approaches: 
+- push query to data: send portion of query to particular node, perform as much filtering before trasmitting it over network
+  query is fragmanted and sent to different nodes, and finally a node collects all the results, union them and sends back
+- pull data to query: needs to be done if no compute resources are available at the storage, bring data to compute node
+  query is fragmanted and sent to different nodes, each node gets the data from shared disk storage, does its processing
+  finally a node collects all the results, union them and sends back
+query fault tolerance: 
+  if one node fails during query execution, then the whole query fails
+  hence node can take snapshots intermediately, store them in the storage itself
+  so if one node goes down, other node can pick the snapshot can continue the computation 
+
+distributed query optimization is even harder because it must consider physical location of data and network transfer costs
+SQL -> optimizer -> optimized query plan -> 
+approach 1: physical operators
+  query plan is broken into partition specific fragments and sent to nodes according to where data is located, most common approach
+approach 2: sql
+  partition specific query plan fragments are converted back to sql and sent to each node
+  this allows for local optimization again at each node ex. singlestore, vitess
+
+architechture:
+  shared nothing:
+    each dbms instance (node) has its own compute cpu, memory and locally attached disk, nodes communicate with each other via network
+  	database is partitioned into disjoint subsets across nodes
+  	since data is local, dbms can access it via posix api
+  	adv:
+  	  potentially better performance and accuracy
+  	  apply filters where data resides before transferring
+  	disadv: 
+  	  data is lost if a ndoe crashes
+  	  hard to scale, adding a new node requires moving physically moving data between nodes
+  shared disk:
+    compute layer and storage layer are separate
+    there is a single logical disk to store the data (object store), nodes communicate with it via interconnect 
+    partition the db tables into large immutable files stored in an object store
+    each node has its own compute cpu, memory and ephemeral storage (used for cache and staging) 
+  	nodes are stateless, meaning if it crashes, data is not lost
+  	instead of posix api, dbms access disk using a userspace api
+  	cloud object stores are now used as storage layer
+  	object stores:
+  	  each cloud vendor provide their proprietary apis to access data (get, put, delete), some vendor support predicate pushdown
+  	  header or footer contains metadata about columnar offsets, compression schemes, indexes, zone moaps
+  	adv: 
+  	  compute layer can be scaled independently from storage layer
+  	  storage layer is infinitely scalable as we put as much data in cloud object stores
+  	  easy to shutdown idle compute layer nodes
+  	disadv:
+  	  may need to fetch entire data without applying any filters (although now cloud object stores provides select queries with where clauses)
+
+cloud systems:
+  vendors provides DBaaS 
+  newer systems are blurring lines between shared-nothing and shared-disk, ex. you can do a filter on S3 before copying it to compute nodes
+type 1: managed dbms, generally a wrapper around opensource db running in a cloud env
+type 2: cloud-native dbms, usually shared-disk, designed explicitly to run in cloud env, ex. snowflake, bigquery
+serverless dbms: 
+  rather than maintaining compute resources for each customer, it evicts tenants when idle, 
+  meanwhile storing the snapshot of page table to shared-disk, it is reloaded when the customer becomes available again, ex. cockroachdb, sql azure
+datalake: 
+  sharedd-disk, repository for storing large amount of structured, semi-structured and unstructured data without having to define a schema ex. object storage
+  need a catalog as well to identify actaul storage location, ex. databricks, snowflake, bigquery, presto, trino
+
+olap commoditization:
+  recently, olap systems are broken into standalone opensource components like catalogs, query optimizer, file format/access library, execution engine
+  now to be build a new dbms, we don't need to start from scratch, rather use these components
+  catalogs: tracks db's schema, tables, data files ex. hcatalog, amazon glue
+  query optimizer: framework for heurstic and cost based optimizers ex. orca, apache calcite
+  data file formats: 
+    most dbms use a proprietary on-disk binary format ex. oracle, mysql, postgres
+    only way to share data between systems is to convert data into common text-based formats ex. json, csv, xml
+    there are new opensource binary file formats that make it easier to access data across systems
+    apache parquet/orc/carbondata: compressed columnar storage
+    apache iceberg: flexible data format that supports schema evolution
+    hdf5: multi-dimensional arrays for scientific workloads
+    arrow: in-memory compressed columnar storage format
+  execution engine: standalone libraries for executing vectorized query operators on columnar data ex. velox, data fusion, intel oap
+
+
+select * from R join S on R.id1 = S.id2;
+data(R, S) are stored in multiple partitions. how do we join?
+if we pull all the data to a single node or memory, we won't use any parallelization and resources
+first create a query plan (DAG) of physical operators with optimizations: predicate pushdown, projection pushdown, optimal join orderings
+
+distributed join algorithms
+scenario 1: one table is replicated on each node
+  each node joins its data in parallel and sends results to coordinating node which unions the results
+  adv: no data transfer to do the join
+  ex. R is partitioned by id1 across nodes, S is replicated in each node 
+  node 1: R{id1} id1: 1-100	    S
+  node 2: R{id1} id1: 101-200 	S
+scenario 2: tables are partitioned on the join key
+  each node joins its data in parallel and sends results to coordinating node which unions the results
+  adv: no data transfer to do the join
+  ex. R is partitioned by id1 across nodes, S is partitioned by id2 across nodes 
+  node 1: R{id1} id1: 1-100 	S{id2} id2: 1-100
+  node 2: R{id1} id1: 101-200 	S{id2} id2: 101-200
+scenario 3: both tables are partitioned on different keys
+  if one of the tables is small, dbms broadcasts that table to all nodes so each node can do the computation in parallel
+  then sends results to coordinating node which unions the results
+  adv: computation can still be parallelized
+  disadv: O(n^2) data transfer across nodes
+  ex. R is partitioned by id1 across nodes, S is partitioned by id2 across nodes 
+  node 1: R{id1} id1: 1-100 	S{val} val: 1-50
+  node 2: R{id1} id1: 101-200 	S{val} val: 51-100
+  here S is small, each node broadcasts its data to other n-1 nodes, O(n^2) data transfers
+scenario 4: both tables are partitioned on join keys
+  dbms copies the data by shuffling across nodes on join keys, each node can do the computation in parallel
+  then sends results to coordinating node which unions the results
+  adv: computation can still be parallelized
+  disadv: O(n^2) + O(m^2) data transfer across nodes
+  ex. R is partitioned by id1 across nodes, S is partitioned by id2 across nodes 
+  node 1: R{name} name: A-M 	S{val} val: 1-50
+  node 2: R{name} name: N-Z 	S{val} val: 51-100
+  after shuffle
+  node 1: R{id1} id1: 1-100 	S{id2} id2: 1-100
+  node 2: R{id1} id1: 101-200 	S{id2} id2: 101-200
+
+dbms storage models
+  specifies how it physical organizes tuples (row) on disk and in memory
+  sample data:
+     		  col a   col b   col c
+    row 0      a0      b0      c0 
+    row 1      a1      b1      c1 
+    row 2      a2      b2      c2 	
+  type 1: n-ary storage model (nsm)	- row storage
+  	stores almost all attributes for a tuple in a single tuple contiguously in a single page, else auxilary storage page if size exceeds
+  	ideal for oltp where txns tend to access individual entries and insert heavy workloads
+  	uses the tuple-at-a-time iterator/volcano processing model
+  	nsm dbs page sizes are typically some constant multiple of 4kb (4/8/16), not too big
+  	nsm page structure:
+  	  a database page stores tuple from the bottom along with its header (stores which values are null)
+  	  start of the page has a header (checksum of the page, vesion of dbms, other metadata) and slot array (pointer to tuples)
+  	    header   slotArray [*row 0, *row1, *row 2]
+  	    ...
+  	    ...		  ...     a2    b2    c2    header
+  	    a1    b1    c1    header    a0    b0    c0
+  	for a sample olap query: select sum(col a), avg(col c) from tbl where col a > 1000
+  	check header for every tuple if value for col a is null or not, then do the comparison, do it for each tuple
+  	then the same process needs to be done for col c, hence this is not efficient at all
+  	adv: 
+  	  fast inserts, updates, deletes
+  	  good for queries that need entire tuples (oltp)
+  	  can use index-oriented physical storage like a B+ tree where the leaf nodes are tuples, can do binary search on leaf nodes for better performance
+  	disadv: 
+  	  not good for scanning large portions of table and/or a subset of attributes
+  	  terrible for memory locality in access patterns, as we need to do jumps
+  	  not ideal for compression because of multiple value domains in same page
+  type 2: decomposition storage model (dsm) - column storage
+    stores a tuple's fixed length and variable-length attributes contiguously in a single slotted page
+    tuple's record id (page#, slot#) is the unique identifier of a tuple
+    dbms stores single attribute of tuples contiguously in a block of data
+    ideal for olap workloads where read-only queries perform large scans over a subset of table attributes
+    uses a batch vectorized processing model, where a batch of tuples are processed at a time instead of a single tuple
+    file size is much larger (100 mb)
+    dsm file:
+      start of the page has a header (checksum of the page, vesion of dbms, other metadata) and null bitmap array (value = 1 for tuple = null)
+    	file 1 
+    	header   null bitmap
+    	a0    a1    a2   ...
+    	file 2 
+    	header   null bitmap
+    	b0    b1    b2   ...
+    	file 3 
+    	header   null bitmap
+    	c0    c1    c2   ...
+    tuple identification:
+    choice 1: fixed length offsets (very common)
+      each value is same length for an attribute
+	  since all values are fixed length, dbms just skips to the offset of desired data
+	  but not all values can be fixed length like varchar, hence we use dictionary compression to convert it to fixed length integer values
+	choice 2: embedded tuple ids
+      each value is stored with its tuple id in a column
+    adv:
+      reduces the amount of wasted i/o per query because dbms only reads the data it needs, we get projection pushdown for free
+      faster query processing because of increased locality and cache data reuse
+      better data compression as the data types are same
+    disadv: 
+      slow for inserts, updates, deletes because of tuple splitting/stiching/reorganization 
+  type 3: hybrid storage model (pax) - column storage better version, mix of nsm and dsm (mostly used for olap systems)
+    partitioning attributes across (pax) is a hybrid storage model that vertically partitions attributes within a database page
+    the goal is to benifit from faster processing of dsm and space locality benifit of nsm
+    used by parquet and orc
+    pax file:
+      horizontally partitioned row groups (on some partition key), then vertically partitioned their attributes into columns
+      global header contains directory with offsets to the file's row groups (stored in footer for parquet/orc)
+      each row group header contains metadata about its contents
+        header 								<- 		global header
+          header 							<-		(row group 1)
+          a0    a1    a2    b0    b1
+          b2    c0    c1    c2 
+          header 							<-		(row group 2)
+          a3    a4    a5    b3    b4
+          b5    c3    c4    c5
+
+memory pages
+  os maps physical pages to virtual memory pages
+  cpu's cache has a tlb (translation lookaside buffer) that contains physical address of a virtual memory page
+  size of a memory page = 4kb, it would be very slow and expensive if we're reading a large dataset, tlb has around 72 entries
+  transparent huge pages (thp):
+    since 4kb page is too small, linux supports creating thp (2mb to 1gb), each page must be contiguous blocks of memory
+    os just combines smaller pages into larger pages in background in a kernel thread
+    adv: greatly reduces # of tlb entries
+    disadv: can cause dbms process to stall on memory access, hence every dbms advises to disable thp on linux
+
+data representation, fixed/variable precision numbers, null data types (lecture 3): to do
+
+hybrid storage model
+  two execution engines (dbms): nsm and pax
+  stores new data in nsm for fast oltp, migrate data to pax for fast olap
+  combine query results from both to appear as a single logical database 
+  choice 1: fractured mirrors 
+    store a second copy of the database in pax that is automatically updated
+    all updated first enters in nsm, then are eventually copied to pax mirror
+    nsm is considered source of truth, as pax can be reconstruced again from nsm
+    if dbms supports updates, it must invalidate tuples in pax mirror
+    nsm is used for transactional querues, pax is used for analytical queries 
+    ex. oracle, ibm blue, sql server
+  choice 2: delta store
+    data comes in nsm (delta store), as it becomes cold, it is moved to pax (historical data) by a background thread in large batches
+    a data point can either exist in delta store or historical data
+    ex. sap hana, vertica, single store, databricks (deltalake/lakehouse)
+
+database partitioning (called sharding in nosql)
+  split database across multiple resources: disks, nodes, processors
+  dbms executes query fragements on each partition and then combines the result 
+  dbms can partition physically (shared nothing) or logically (shared disk)
+  horizontal partitioning:
+    split a table's tuples into disjoint subsets based on some partition key(s)
+    partitioning schemes:
+      hashing: get node = hash(attribute) % # of partitions
+      ranges: split nodes for attribute's value range ex. A-H, I-P, Q-Z
+      predicates: a where clause on attribute to decide whether the tuple belongs to a certain partition
+
+analytical database indexes
+  oltp uses indexes to find individual tuples without performing sequential scans, use b+ trees, also needs to accomodate for incremental updates
+  but olap doesn't need to find individual tuples and data files are read only (immutable) unlike oltp
+  sequential scan optimizations:
+    data prefetching, task parallelization/multi-threading, clustering/sorting, late materialization, 
+    materialized views/result caching, data skipping, data parallelization/vectorization, code specialization/compilation
+
+data skipping
+  approach 1: approximate queries (lossy)
+  	execture queries on a sampled subset of the entire table to produce approximate results
+  	need to know that if client is okay with approximate results
+  	ex, redshift, bigquery, databricks, snowflake, oracle
+  approach 2: data pruning (lossless)
+  	use auxilary data structures for evaluating predicates to quickly identify portions of data that dbms can skip, like b+ trees in oltp
+  	dbms must consider trade-offs between scope vs filter efficacy, manual vs automatic
+  	data considerations: 
+  	  predicate selectivity: how many tuples will satisfy a query's predicates, for ex. if a bool column has all true values, no need for auxilary data structure
+  	  skewness: whether an attribute has all unique values or contain many repeated values
+  	  clustering/sorting: whether the table is pre-sorted on the attributes accessed in query's predicates
+
