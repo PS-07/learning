@@ -10,7 +10,35 @@ map-reduce:
   paper by Google in 2004, distributed programming framework where we can write specialized map and reduce java funtions (UDF) for data processing
   they were creating checkpoints at each and every stage, which made it slower, inefficient architechture
 hadoop: opensource clone of map-reduce created by Yahoo
+hdfs: 
+  hadoop distributed file system
+  it has nameNodes to manage hdfs metadata, datanodes to store the blocks of data (file is broken down into blocks)
+  ex. CREATE TABLE student (id INT, name STRING) STORED AS ORC PARTITIONED BY (age INT);
 hive: added sql on top of map-reduce, similar mapr-db
+hive table: 
+  is created on top of hdfs data using spark sql query
+  need to specify, input format, output format (text, parquet, orc, avro, rcfile), serde class for rows to data and vice-versa, partition key, delimiter
+spark: 
+  from Berkeley in 2010, high performance and more expressive replacemt for map-reduce, written in scala (ran on jvm)
+  separate compute and storage, support for iterative algorithms that makes multiple passes on the same dataset
+  rdd (resilient distributed dataset): immutable partitioned collection of elements that can be operated in parallel, inputs/outputs to task computations
+  spark sql: used to read/write from hive tables, execute sql queries
+  dataset: added in spark 1.6, a distributed collection of data that provides the benifits of rdd with spark sql's optimized execution engine
+  dataframe: a dataset organized into named columns, equivalent to a table, DataFrame is simply a type alias of Dataset[Row]
+  originally only supported low-level rdd api like map, filter, persist
+  later added dataframe api for higher-level abstraction
+spark submit: 
+shark: 
+  stop gap solution for sql support in spark
+  hive's fork that converted sql into spark api programs
+  only supported sql on data files registered in hive's catalog
+  used hive's query optimizer that was designed for running map-reduce jobs on hadoop
+spark sql:
+  created by databricks in 2015, row based native sql engine in spark runtime with scala based query codegen
+  but atleast the intermediate results from operators were in-memory columnar representation
+  support dictionary encoding, rle, bitpacking compression, in-memory shuffle between query stages and pipelines
+  it converted query's where clause expression trees into scala ASTs, then compiles there ASTs to generate jvm bytecode
+  jvm problems: garbage collector slowdownn, codegen limitation for large methods
 presto/trino: efficient for running analytical queries on share-disk storage
 nosql db: 
   introduced in 2000s, focus on high availability and high scalability
@@ -301,4 +329,9 @@ data skipping
   	  predicate selectivity: how many tuples will satisfy a query's predicates, for ex. if a bool column has all true values, no need for auxilary data structure
   	  skewness: whether an attribute has all unique values or contain many repeated values
   	  clustering/sorting: whether the table is pre-sorted on the attributes accessed in query's predicates
+
+
+
+
+
 
