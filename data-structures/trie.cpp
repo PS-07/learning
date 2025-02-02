@@ -5,12 +5,12 @@ const int MAX_CHILDREN = 26;
 
 struct TrieNode {
     struct TrieNode* children[MAX_CHILDREN];
-    bool terminating;
+    bool ending;
     
     TrieNode() {
         for(int i=0; i<MAX_CHILDREN; i++)
             children[i] = NULL;
-        terminating = false;
+        ending = false;
     }
 };
 
@@ -24,33 +24,40 @@ public:
     }
     
     void insert(string word) {
-        struct TrieNode* node = root;
-        int s = word.size();
-        int i = 0;
-        
-        while(i < s) {
-            if(node->children[word[i]-'a'] != NULL) 
-                node = node->children[word[i]-'a'];
-            else {
-                TrieNode* newNode = new TrieNode();
-                node->children[word[i]-'a'] = newNode;
-                node = newNode;
-            }   
-            i++;
+        TrieNode* node = root;
+        for (char c : word) {
+            int x = c - 'a';
+            if (node->children[x] == nullptr) 
+                node->children[x] = new TrieNode();
+            node = node->children[x];
         }
-        node->terminating = true;
+        node->ending = true;
     }
-    
+
     bool search(string word) {
         TrieNode* node = root;
-        int s = word.size();
-        
-        for(int i=0; i<s; i++) {
-            if(node->children[word[i]-'a'] == NULL)
+        for (char c : word) {
+            int x = c - 'a';
+            if (node->children[x] == nullptr)
                 return false;
             else
-                node = node->children[word[i]-'a'];
+                node = node->children[x];
         }
-        return node->terminating;
+        return node->ending;
     }
 };
+
+int main() {
+    Trie trie;
+    
+    trie.insert("apple");
+    trie.insert("app");
+    trie.insert("banana");
+    
+    cout << "Search apple: " << (trie.search("apple") ? "Found" : "Not Found") << endl;
+    cout << "Search app: " << (trie.search("app") ? "Found" : "Not Found") << endl;
+    cout << "Search banana: " << (trie.search("banana") ? "Found" : "Not Found") << endl;
+    cout << "Search orange: " << (trie.search("orange") ? "Found" : "Not Found") << endl;
+
+    return 0;
+}
