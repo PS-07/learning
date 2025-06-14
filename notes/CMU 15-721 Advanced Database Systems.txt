@@ -68,7 +68,7 @@ distributed OLAP
 distributed query execution:
   executing a olap query in distributed dbms is roughly same as on a single node dbms
   query plan: dag on physical operators
-  for each operator (tablescan, join, sort, agg), dbms will consider where input is comping from and where to send the output
+  for each operator (tablescan, join, sort, agg), dbms will consider where input is coming from and where to send the output
   worker nodes will read persisted data, optionally send it to shuffle nodes and
   worker nodes will run parallelly to execute fragments of query while sharing intermediate data
   persisted data:
@@ -136,7 +136,7 @@ serverless dbms:
   rather than maintaining compute resources for each customer, it evicts tenants when idle, 
   meanwhile storing the snapshot of page table to shared-disk, it is reloaded when the customer becomes available again, ex. cockroachdb, sql azure
 datalake: 
-  sharedd-disk, repository for storing large amount of structured, semi-structured and unstructured data without having to define a schema ex. object storage
+  shared-disk, repository for storing large amount of structured, semi-structured and unstructured data without having to define a schema ex. object storage
   need a catalog as well to identify actaul storage location, ex. databricks, snowflake, bigquery, presto, trino
 
 olap commoditization:
@@ -247,7 +247,7 @@ dbms storage models
       each value is same length for an attribute
 	  since all values are fixed length, dbms just skips to the offset of desired data
 	  but not all values can be fixed length like varchar, hence we use dictionary compression to convert it to fixed length integer values
-	choice 2: embedded tuple ids
+	  choice 2: embedded tuple ids
       each value is stored with its tuple id in a column
     adv:
       reduces the amount of wasted i/o per query because dbms only reads the data it needs, we get projection pushdown for free
@@ -282,6 +282,11 @@ memory pages
     disadv: can cause dbms process to stall on memory access, hence every dbms advises to disable thp on linux
 
 data representation, fixed/variable precision numbers, null data types (lecture 3): to do
+
+encoding (https://www.youtube.com/watch?v=CElvA9v4U_E)
+  rle
+  delta
+  dictionary
 
 hybrid storage model
   two execution engines (dbms): nsm and pax
@@ -335,11 +340,11 @@ data skipping
       bit slicing
       bit weaving
       column imprints
-      column skethes
+      column sketches
 
 zone maps
-  precomputed aggredates for attributes in a block of tuples. dbms checks the zone map first to decide whether to access the block or not
-  also called as small materialized aggredates (page metadata in parquet file)\
+  precomputed aggregates for attributes in a block of tuples. dbms checks the zone map first to decide whether to access the block or not
+  also called as small materialized aggregates (page metadata in parquet file)
   ex. data = 100, 200, 300, 400, 500
       zone map: min = 100, max = 500, avg = 300, sum = 1500, count = 5
       so a query: select * from table where val > 600 will check the zone map and decide not to read the block
@@ -364,6 +369,423 @@ L5: database compression
 
 
 L6: query execution & processing models
-  
+
+
+
+iceberg
+
+what is a table format: a way to organize dataset files in datalake to present them as a single table
+mapreduce in hadoop cluster used to write complex js code to determine the files for a dataset
+
+hive (first solution)
+  write sql which internally were translated to mapreduce scripts but it had to find a way to recognize tables
+  dir based approach: all data files for a dataset were stored under a directory/folder
+  it creates subfolders to partition data
+  pros:
+    works with every engine as it is a de-facto standard 
+    more efficient access patterns than full table scans due to partitions
+    file format agnostic
+    automatically update a whole partition with acid guarantee i.e. for an update to a single row, the entire partition is re-written
+  cons:
+    small updates are very inefficient because the whole partition would be updated for a single row update
+    no way to update data in multiple partitions safely
+    dir listing, open file, read file operations took significant time
+    users have to know the physical layout of the table as the query should be aligned to how the data is partitioned to avoid full table scan (very slow), e.g. lets say table has a timestamp col, so we have to create derived columns: month, year to partition data month wise, hence the sql querying for data between two timestamps, we need to add additional filters for correct partitions
+    hive table stats are often stale (it runs analyze queries periodically)
+  hence we need a new table format, requirements:
+    data correctness and consistency
+    faster query planning and execution
+    users need not worry about physical layout of data
+    table schema evolution (add/remove cols, change partition columns)
+    should work on scale
+
+iceberg
+  table is a canonical list of files i.e. can be anywhere in the datalake, need not be in a dir
+  pros:
+    efficiently make smaller updates i.e. we just to re-write that particular file instead of whole partition as it was the case with hive
+    snapshot isolation for transaction: after every write, a snapshot is created and read reads from the latest snapshot, read and write don't interfere, all writes are atomic, supports concurrent writes
+    faster planning and execution as column stats in manifest files are used to eliminate files
+    hidden partitioning, compaction, schema evolution, time travel
+
+
+iceberg table propertites
+- at table creation
+create table catalog.db.students (id int, name string, class int) 
+TBLPROPERTIES (
+  'write.delete.mode' = 'copy-on-write',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode' = 'merge-on-read',
+) PARTITIONED BY (class) USING iceberg;
+
+- modify later
+alter table catalog.db.students 
+SET TBLPROPERTIES (
+  'write.update.mode' = 'copy-on-write',
+  'write.merge.mode' = 'copy-on-write',
+); 
+
+ensure that execution engine (spar, trino, dreamio etc.) knows how to handle the set properties
+
+update/delelte a row
+- copy on write: datafile with row would be rewritten (as immutable), slow writes and fast reads
+- merge on read: create a new delete file to track update/delete, the delete files are then merged while read, fast writes and slow reads
+  - position delete: read the datafile to get its position in the file and write it to delete file (eg. 002.parquet 6 -> row at position 6 was deleted in file 002.parquet)
+    since we have to read the file to get the position, it not too fast
+  - equality delete: delete file just track specified filter prediacates from the query and then matches them during read 
+    even faster for write (as we don't have to read the datafile), but read becomes slow (need frequent compaction that merges delete file so that it doesn't happen during read)
+
+parquet vectorization: data is fetched from parquet file in a batch instead of a single row at a time ('read.parquet.vectorization.enables' = 'true')
+write format: formats of data files and delete files, supported formats are parquet, avro, orc ('write.format.default' = 'parquet', 'write.delete.format.default' = 'avro')
+compression format: supports zstd, brotli, gzip, snappy ('write.parquet.compression-codec')
+cleanup metadata files: every write generates a new metadata.json file, it can be limited and cleaned up ('write.metadata.delete-after-commit.enabled' = 'true', 'write.metadata.previous-versions-max' = 50)
+column metric tracking: stats for each column is done for each column, can be limited using counts, full etc ('write.metadata.metrics.default' = 'false', 'write.metadata.metrics.columns.col1' = 'counts')
+object storage compatibility: enable object storage and path ('write.object-storage.enable' = 'true', 'write.data.path' = 's3://my-bucket/data')
+
+
+current data pipeline architechture
+  data source (application transactional data) --etl--> data lake --etl--> data warehouse
+  issues: data lock-in in data warehouse which are expensive, data drift across the pipeline
+
+data lakehouose architechture
+  data source --etl--> data lake --> organize data using open table format (such as iceberg) -> use open engines for analytics (sprak, dreamio etc)
+  pros: don't pay for double storage, can use multiple engines, no vendor lock-in
+  components:
+    lakehouse engines     analytics on data, engines that support reading/writing from the table format (iceberg)
+    catalog               to track the tables (nessie, aws glue, hive, hdfs)
+    table format          organize data into table like structure, provides acid transactions, time travel, schema evolution, partition evolution, hidden partitioning (iceberg, hudi, delta)
+    file format           store data in some columnar format (parquet, orc)     
+    storage layer         data storage (cloud storage: s3)
+
+
+iceberg architechture
+  catalog: 
+    communicates with engine, tells what tables exist and locates its metadata file as at every update a new snapshot and metadata file is created (nessie, aws glue, hms, hdfs, jdbc db, rest catalog)
+    hdfs catalog is not recommended as there would be multiple writes and would have concurrency issues
+  metadata layer:
+    metadata file: info (current and past) about schemas, partitions, snapshots 
+    {
+      "table-uuid": "<uuid>",
+      "location": "", // default location 
+      "schema": { ... }, // current schema 
+      "partition-spec": [ {<partition-details>}, ... ],
+      "current-snapshot-id": "<snapshot-id>",
+      "snapshots": [{
+        "snapshot-id": "<snapshot-id>",
+        "manifest-list": "path/to/manifest/list.avro"
+      }, ... ].
+    }
+    manifest list: 
+      defines a snapshot of the table with list of manifests that makes up a snapshot and its metadata (corresponding to every snapshot)
+      each manifest in the list represents a grouop of files
+      tells when a manifest was added (using snapshot-id)
+      partition spec this particular partition represents and use filters in our query, if the manifest doesn't apply, those group of files (manifest) can be skipped
+      {
+        "manifest-path": "path/to/manifest/file1.avro",
+        "added-snapshot-id": "<snapshot-id>",
+        "partition-spec-id": "<partition-spec-id>"
+        "partitions": [ {<partition-info>}, ... ]
+      },
+      {
+        "manifest-path": "path/to/manifest/file2.avro",
+        "added-snapshot-id": "<snapshot-id>",
+        "partition-spec-id": "<partition-spec-id>"
+        "partitions": [ {<partition-info>}, ... ]
+      }
+    manifest file: 
+      list of data files along with metadata on those data files for file pruning
+      col level stats can be used to optimize query
+      [{
+        "data-file": {
+          "file-path": "/path/to/data/file.parquet",
+          "file-format": "PARQUET",
+          "partition": {"<part-field>": {"<data-type>: <value>"}},
+          "record-count": "<num-records>",
+          "null-value-counts": [ {"column-index": "1", "value": 4}, ... ],
+          "lower-bounds": [ {"column-index": "1", "value": "aaa"}, ... ],
+          "upper-bounds": [ {"column-index": "1", "value": "eee"}, ... ]
+        }
+      }]
+  data layer: data files
+
+
+
+apache hudi
+
+
+
+proxy vs reverse proxy
+
+proxy (forward proxy)
+  it's a server (in client's lan) that intercepts client requests and talks to the web servers on behalf of them
+  client a, client b, client c ---> forward proxy ---> internet ---> web server
+  the client applications must be configured to point to the forward proxy (use transparent proxy with layer 4 switches)
+  adv:
+    protects client's identity (website wouldn't know the client)
+    block access to certain websites (used in schools, organizations)
+
+reverse proxy (nginx)
+  it's a server (in server's lan) that intercepts clients requests and directs it to the web servers
+  client a, client b, client c ---> internet ---> reverse proxy ---> web server a, web server b
+  ingress service: combines edge server and api gateway/load balancer. user enters the cloud network from the edge server closer to their region and then to the servers deployed there via the load balancer
+  adv:
+    protect the website as the websers ip address' are hidden behind it (harder to target a ddos attack)
+    load balancing requests
+    can cache static content and returns the response to the client
+    can handle ssl encryption as it ssl handshake is computationally expensive, now the webservers only needs to handle ssl handshake from reverse proxy
+
+
+
+web authentication
+
+session-based authentication
+  user logins using their creds to the server. the server validates the creds. if valid, it creates a new session and stores the session data in db/cache (userId, sessionId, expirationTime). server sends back sessionId in form of a cookie.
+  user sends the sessionId as cookie for subsequent requests. the server verifies the session by looking at the session store and then processes the requests
+  adv:
+    invalidation/revoking a session is easy
+  disadv:
+    the session store is a centralized store access by all the service, adding some latency
+
+jwt(json web token) based authentication
+  provides authentication, authorization, secure information exchange
+  user logins using their creds to the server. the server validates the creds. if valid, it generates a jwt and signs it with a secret key. server sends back jwt in form of a cookie.
+  client stores the jwt usually in local storage or web cookie
+  user sends the sessionId as cookie (in http header) for subsequent requests. the server verifies the jwt signature. if valid, then processes the requests
+  jwt token are not encoded, not encrypted, hence can be intercepted. shouldn't have sensitive information
+  used in oauth standards like openid connect and oauth2 for authentication and authorization
+  jwt structure has 3 parts: header, payload, signature (aaaa.bbbb.cccc). each section is base64 encoded
+    header: 
+      has token type and hashing algo (hmac-sha256, rsa, ecdsa)
+      {
+        "alg": "HS256",
+        "typ": "JWT"
+      } 
+    payload:
+      stores claims. claim is statement about an entity. types of claims: registered (name, exp, sub), public, private
+      {
+        "name": "Alex",
+        "typ": "alex@companny.com",
+        "exp": "1234567890",
+        "sub": "54236436"
+      } 
+    signature:
+      signing the token ensures that there has been no tampering
+      symmetric algo (hmac), asymmetric algo (rsa/ecdsa)
+  adv:
+    no separate storage, hence jwt are stateless
+    scaling client and server is easy
+  disadv: 
+    invalidation of jwt is not easy
+    jwt token are not encoded, not encrypted, hence can be intercepted. shouldn't have sensitive information
+    vulnerable to theft and can provide full access to resources if intercepted
+    poor performance if the payload is large
+  signing jwt algorithms:
+    hmac: 
+      symmetric signing method, same secret is used to sign and verify the token (shared between issuer and validator), might be a security concern
+      works well for a monolithic architechture
+    rsa/ecdsa: 
+      asymmetric signing method, private key is used to sign a token and a public key is used to verify the token. private key is only with the issuer while any service (validator) uses the public key. 
+      it adds computational complexity
+      good for microservices architechture or untrusted third-party services
+  refresh token:
+    it is used alongside the jwt (short lived token ~ 15 min). it has a long expiration time (days/weeks)
+    when jwt expires, client can send the refresh to token to special endpoint to the server, which validates and return a new jwt
+
+
+sso
+
+it is authentication scheme that allows user to securely access multiple application and services with a single id. it is based on federated identity which is used to access independed trusted applications 
+user ---> service provider (gmail) ---> identity provider ---> access apps (workday, slack etc.)
+there are 2 protocols:
+  saml (security assertion markup language): xml based
+  openid connect: json based
+sso flow:
+  user login with creds on the service provider (gmail) login page which verifies and returns a saml authentication request (sar): xml doc back to the browser 
+  bowser redirects user to the identity provider specificed in the sar. some common identity providers are okta, oauth0, onelogin. it shows the login page on the browser where users enters creds
+  identity provider authenticates the user and sends a saml assertion. it is a cryptographically signed xml document that contains info about user ans what user can access with service provider
+  browser sends signed saml assertion to service provider which validates it and returns the proteced resource to the browser
+  now when the user navigates to another sso integrated app:
+    user login and service provider (workday) returns a sar to the browser. the browser forward the sar to identity provider 
+    since user is already logged in with the identity provider, it just returns saml assertion to the browser
+    browser sends sar to the service provider which validates it and returns the proteced resource to the browser
+
+
+spark internals
+
+core components: execution model, shuffle, caching
+execution model
+  example: find no of distinct names per first letter
+  code: 
+    sc.textFile("hdfs:/names")                                ahir          pat         andy
+      .map(name => (name.charAt(0), name))                    (a, ahir)     (p, pat)   (a, andy)
+      .groupByKey()                                           (a, [ahir, andy])        (p, [pat])
+      .mapValues(names -> names.toSet.size)                   (a, 2)                   (p, 2)   
+      .collect()                                              [(a, 2), (p, 2)]
+  execution:
+    create dag of rdd to represent computation
+      rdd dag: hadoopRDD -> map() -> groupBy() -> mapValues() -> collect()
+    create logical execution plan for dag
+      pipeline as much as possible. when the result can be generated independent of any other data i.e. until reorganiztion of data isn't required, then it can be pipelined 
+      split into stages based on the need to reorganize data
+      stage 1: hadoopRDD -> map() 
+      stage 2: groupBy() -> mapValues() -> collect()
+    schedule tasks
+      split each stage into tasks
+      a task is data + computation
+      execute all tasks within a stage before moving on to the next
+      stage 1:
+      assume data = hdfs:/names/0.gz, hdfs:/names/1.gz, hdfs:/names/2.gz, hdfs:/names/3.gz
+      computation = hadoopRDD -> map() 
+      task 0 = hdfs:/names/0.gz -> hadoopRDD -> map()
+      task 1 = hdfs:/names/1.gz -> hadoopRDD -> map()
+      ...
+      driver sends each task to an executor
+      assume that the spark cluster has 3 executor nodes with some data on each
+      schedule tasks on nodes which has the data
+      there is a very small delay between scheduling tasks as scheduled from one thread in the driver program
+                                                              time
+      node 1 = hdfs:/names/0.gz, hdfs:/names/3.gz   [task 0][task 3]
+      node 2 = hdfs:/names/1.gz, hdfs:/names/2.gz     [task 1]
+      node 3 = hdfs:/names/2.gz, hdfs:/names/3.gz       [task 2] 
+      notice that it was not optimial as when task 3 ran, the other nodes were idle
+
+      stage 2: groupBy() -> mapValues() -> collect()
+      for the groupBy to work we need to rearrange the data so that all the data for a group is in one node. this is known as shuffle
+      shuffle: redistribute the data among partitions
+      optimization in shuffle: 
+        avoid when possible, if data is already in the correct node, don't shuffle
+        partial aggregation reduces data movement ex. if we node has 'foo' 100 times, rather than sending 'foo' ... 100 times, just send ('foo', 100)
+      it is pull-based, not push-based
+      write intermediate data files to disk
+      we have 4 partitions of data as there were 4 tasks in stage 1
+      each partition of stage 1 will partition its data into 4 files and store it on the disk
+      the 4 partitions of stage 2 will pull data from disk i.e. partition 1 will read from the 1st file written by partitions in stage 1 ans so on
+      execution of groupBy() (in general of reducers): build hash map within each partition a => (ahir, andy)   p => (pat)
+
+      issues in the above example:
+        too few partitions for good concurrency
+        large per key groupBy
+        shipped all data across the cluster
+      common issues in general:
+        ensure enough partitions for concurrency, at least the number of cores 
+        minimize memory consumption (for sorting and large key groupBy)
+        minimize amount of data shuffled
+        know the standard library
+      partition tuning:
+        too few partitions: less concurrency, susceptible to data skew, increased memory pressure for groupBy, sortByKey, reduceByKey
+        too many partitions (not common)
+        need reasonable no of partitions: commonly between 100 - 10000, lower bound = atleast 2x no of cores in the cluster, upper bound = tasks take atleast 100ms
+      memory problem:
+        symptoms: bad performance, executor failures
+        diagnosis: set spark.executor.extraJavaOptions to include XX:+PrintGCDetails, XX:+HeapDumpOnOutOfMemoryError, check dmesg for oom-killer logs
+        resolution: increase spark.executor.memory, increase no of partitions, re-evaluate program structure
+
+      fixing out mistakes:
+      new code: 
+        sc.textFile("hdfs:/names")
+          .distinct(numPartitions = 6)
+          .map(name -> (name.charAt(0), 1))
+          .reduceByKey(_ + _)
+          .collect()
+      on a cluster with 3 executors (1 core each), old code took 41s and new code took 9s for a 40M rows dataset (300 MB)
+
+
+
+b tree
+  self balancing search based tree that does all opeations: insert, delete, search in O(logn)
+  it is the underlying data structure used in relational sql database
+  optimized for reads, not writes. a write can lead to updating multiple pages of the db which involves a lot of random i/o
+
+lsm tree (log structured merge tree)
+  writes are batched in memory in a structure called memtable (balanced binary tree)
+  when memtable reaches a certain size, it is sorted and flushed to disk as an immutable sstable/run (sorted string table). since it is sequentail writes, fast i/o. it becomes the latest sstable
+  update: if there is an update to an existing key, the entry is made in the latest sstable, as the sstables are immutable
+  delete: the value of the key to be deleted is set as tombstone in the latest sstable
+  read: first try to find the key in the memtable. if not found, go to the disk and start searching from the most recent memtable. since data is sorted, binary search can be applied
+  as more data comes in, new sstables are created and there are old redundant entries for updated and deleted keys. these take up disk space.
+  hence there is periodic merging and compaction process running in the background which discards outdated and deleted keys. approach used is same as the merge phase of merge sort algo
+  when sstables are merged, they're organized into levels
+  compaction strategies:
+    size-tier compaction
+      optimized for write
+      used in cassandra
+    leveled compaction
+      optimized for read
+      used in rocksdb
+  when a level gets exponentially larger, sstables from the above level are merged into it
+  compaction consumes a lot of i/o. mistuned compaction can strave the system and impact read and write performance
+  optimizations to save random i/o (improve read performance):
+    summary table (dence pointers)
+      present in memory that contains min-max range of each sstable of every level. this allows only 1 i/o for each level 
+    bloom filter
+      it is a space efficient data structure that returns a firm no if the key does not exist or a probable yes, uf the key exists
+      one bloom filter for each level which allows to skip the level
+  merge frequency
+    how often should the sstable be merged. it is a read/write tradeoff. higer the merge frequency, slower writes, faster reads
+  no of levels = logr(n) i.e. log(n) base r
+  r = size ration between levels
+  merge and compaction strategies:
+    size-tier compaction
+      optimized for write
+      used in cassandra
+      each level gathers runs from previous levels. only when the capacity is reached for the level, it is merged and flushed to the next level
+      r runs per level
+    leveled compaction
+      optimized for read
+      used in rocksdb
+      merge occurs as soon as a new run comes in from the previous level. even level with have just 1 run. when the size of run exceeds the capacity of the level, it is flushed to the next level
+      1 run per level
+  for smaller r (eg. 2), behaviour of size-tier and leveled approaches converge
+  if r is very large, infact so large that first level never runs out of capacity 
+    tiered lsm tree is just like a log as the merge never happens
+    leveled lsm tree is just a sorted array because whenever the buffer flushes, it is merged with the single run of level 1
+  fast write (r = very high)       r = 2         fast read (r = very high)
+  log                 tiering           leveling             sorted array
+  leveldb hbase dynamodb cassandra      rocksdb   bigtable           riak
+
+
+
+
+acid properties
+  atomicity - txn is all or nothing, either the entire txn is commited or rolled back
+  consistency - any data written during txn must follow the constraints and triggers. db checks for any constraint violations itself
+  isolation - how concurrent txns interact with each other 
+  durability - once a txn is commited, it's permanent even if db crashes. achieved by write ahead logging to persist changes to disk before confirming the commit. it also means replicating data across multiple nodes
+
+
+isolation levels
+
+isolation property is ACID. it determines how txn integrity is visible to other users
+isolation levels define the degree to which txns must be isolated
+db phenomenas:
+  dirty read - a txn reads the data which isn't commited yet. ex. txn1 updates a row, but not committed. txn2 reads the updated value, but imagine txn1 rolled back
+  non-repeatable read - when a txn reads the same row twice and gets diff results. ex. txn1 reads a row. another concurrent txn2 updates the row and commits. txn1 reads the row again, but gets a diff value
+  phantom read - same query is executed twice, but gets diff results. ex. txn1 runs query q with some search criteria, gets data. txn2 generates rows that matches the criteria. txn1 runs query q again, diff result
+isolation levels (lowest to highest degree of isolation, performace degrades, consistency improves):
+  read uncommited - txns may read uncommited changes made by other txns, allowing dirty reads
+  read commited - it gurantees that data read is commited, doesn't allow dirty read. the txn holds a read or write lock on current row preventing other txns to read, update, delete
+  repeatable read - txn holds read and write locks on referenced rows, thus not allowing other txns to read, update, delete these rows avoiding non-repeatable read
+  serializable - txns are executed squqentially, no concurrent txns
+                        dirty read        non-repeatable read       phantom read
+  read uncommited       may occur         may occur                 may occur
+  read committed        doesn't occur     may occur                 may occur
+  repeatable read       doesn't occur     doesn't occur             may occur
+  serializable          doesn't occur     doesn't occur             doesn't occur
+
+
+distribution txn
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
